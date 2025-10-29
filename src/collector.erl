@@ -281,7 +281,7 @@ prometheus_gauges(Opts) ->
     InfosRaw = processes_info(#{ as_map => true }),
     Infos = lists:filter(Filter, InfosRaw),
     lists:flatten(
-      [ prometheus_gauges(N, Infos, K) || 
+      [ prometheus_gauges(N, Infos, K, Opts) || 
 	  {N, K} <- [ {erlang_custom_process_memory, memory}
 		    , {erlang_custom_process_stack_size, stack_size}
 		    , {erlang_custom_process_message_queue, message_queue_len}
@@ -295,51 +295,61 @@ prometheus_gauges(Opts) ->
 %%--------------------------------------------------------------------
 %% @hidden
 %%--------------------------------------------------------------------
-prometheus_gauges(Name, Infos, ValueKey) ->
-    prometheus_gauges(Name, Infos, ValueKey, []).
-prometheus_gauges(_Name, [], _ValueKey, Buffer) ->
+prometheus_gauges(Name, Infos, ValueKey, Opts) ->
+    prometheus_gauges(Name, Infos, ValueKey, [], Opts).
+prometheus_gauges(_Name, [], _ValueKey, Buffer, _Opts) ->
     Buffer;
-prometheus_gauges(Name, [Info|Rest], ValueKey, Buffer) ->
-    NewBuffer = [ prometheus_gauge(Name, Info, ValueKey)
+prometheus_gauges(Name, [Info|Rest], ValueKey, Buffer, Opts) ->
+    NewBuffer = [ prometheus_gauge(Name, Info, ValueKey, Opts)
 		| Buffer
 		],
-    prometheus_gauges(Name, Rest, ValueKey, NewBuffer).
+    prometheus_gauges(Name, Rest, ValueKey, NewBuffer, Opts).
 
 %%--------------------------------------------------------------------
 %% @hidden
 %%--------------------------------------------------------------------
-prometheus_gauge(_Name, #{ status := undefined }, _ValueKey) ->
+prometheus_gauge(_Name, #{ status := undefined }, _ValueKey, _Opts) ->
     {error, undefined};
-prometheus_gauge(Name, Info, ValueKey) ->
+prometheus_gauge(Name, Info, ValueKey, Opts) ->
+    Registry = maps:get(registry, Opts, default),
     Labels = prometheus_labels(Info),
     Value = maps:get(ValueKey, Info),
-    {prometheus_gauge, set, [Name, Labels, Value]}.
+    {prometheus_gauge, set, [Registry, Name, Labels, Value]}.
 
 %%--------------------------------------------------------------------
 %% @doc init prometheus application with custom metrics name.
 %% @end
 %%--------------------------------------------------------------------
 prometheus_init() ->
+    prometheus_init(#{}).
+
+prometheus_init(Opts) ->
+    Registry = maps:get(registry, Opts, default),
     Gauges =
 	[ [{name, erlang_custom_process_memory}
 	  ,{labels, prometheus_labels()}
 	  ,{help, "extra process memory metrics"}
+	  ,{registry, Registry}
 	  ]
 	, [{name, erlang_custom_process_stack_size}
 	  ,{labels, prometheus_labels()}
 	  ,{help, "extra process stack size metrics"}
+	  ,{registry, Registry}
 	  ]
 	, [{name, erlang_custom_process_message_queue}
 	  ,{labels, prometheus_labels()}
 	  ,{help, "extra process message queue metrics"}
+	  ,{registry, Registry}
 	  ]
 	, [{name , erlang_custom_process_reductions}
 	  ,{labels , prometheus_labels()}
 	  ,{help , "extra process reductions metrics"}
+	  ,{registry, Registry}
 	  ]
 	, [{name , erlang_custom_process_heap_size}
 	  ,{labels , prometheus_labels()}
 	  ,{help , "extra process heap size metrics"}
+	  ,{registry, Registry}
 	  ]
 	% , [{ name , erlang_custom_process_links}
 	%   ,{labels , prometheus_labels()}
@@ -359,7 +369,14 @@ prometheus_init() ->
 %% @end
 %%--------------------------------------------------------------------
 prometheus_deregister() ->
-    [ prometheus_gauge:deregister(Name) || 
+    prometheus_deregister(#{}).
+
+%%--------------------------------------------------------------------
+%%
+%%--------------------------------------------------------------------
+prometheus_deregister(Opts) ->
+    Registry = maps:get(registry, Opts, default),
+    [ prometheus_gauge:deregister(Registry, Name) || 
 	Name <-[ erlang_custom_process_memory
 	       , erlang_custom_process_stack_size
 	       , erlang_custom_process_message_queue
@@ -396,7 +413,7 @@ stop() ->
 prometheus_process_init(Opts) ->
     erlang:register(?MODULE, self()),
     erlang:process_flag(trap_exit, true),
-    _ = prometheus_init(),
+    _ = prometheus_init(Opts),
     _ = prometheus_apply(Opts),
     {ok, Ref} = timer:send_interval(60_000, tick),
     prometheus_process_loop(Opts, Ref).
@@ -407,11 +424,22 @@ prometheus_process_init(Opts) ->
 prometheus_process_loop(Opts, Ref) ->
     receive
 	tick ->
-	    _ = prometheus_deregister(),
-	    _ = prometheus_init(),
-	    _ = prometheus_apply(Opts),
+	    prometheus_process_action(Opts),
 	    prometheus_process_loop(Opts, Ref);
 	_ ->
 	    timer:cancel(Ref)
     end.
-	    
+
+prometheus_process_action(Opts = #{ registry := Registry })
+  when Registry =/= default ->
+    _ = prometheus_deregister(Opts),
+    _ = prometheus_init(Opts),
+    _ = prometheus_apply(Opts),
+    Prom = prometheus_text_format:format(Registry),
+    file:write_file("/tmp/collector.prom", Prom);
+prometheus_process_action(Opts) ->
+    _ = prometheus_deregister(Opts),
+    _ = prometheus_init(Opts),
+    _ = prometheus_apply(Opts).
+	
+    
