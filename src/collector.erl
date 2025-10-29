@@ -495,10 +495,12 @@ prometheus_init(Opts) ->
 	, [{name, erlang_custom_process_links}
 	  ,{labels, prometheus_process_labels()}
 	  ,{help, "extra process links metrics"}
+	  ,{registry, Registry}
 	  ]
 	, [{name, erlang_custom_process_monitors}
 	  ,{labels, prometheus_process_labels()}
 	  ,{help, "extra process monitors metrics"}
+	  ,{registry, Registry}
 	  ]
 	],
     [ erlang:apply(prometheus_gauge, new, [A]) ||
@@ -554,7 +556,7 @@ stop() ->
 %% @hidden
 %%--------------------------------------------------------------------
 prometheus_process_init(Opts) ->
-    Interval = maps:get(interval, Opts, 60_000),
+    Interval = maps:get(interval, Opts, 30_000),
     erlang:register(?MODULE, self()),
     erlang:process_flag(trap_exit, true),
     _ = prometheus_init(Opts),
