@@ -1,5 +1,17 @@
 %%%===================================================================
 %%% @doc A quick and dirty extended collector metrics interface.
+%%%
+%%% == Custom Prometheus Registry ==
+%%%
+%%% Exposing BEAM metrics can be risky. To avoid exposing confidential
+%%% data, it is possible to use a custom registry.
+%%%
+%%% ```
+%%% collector:start_link(#{ registry => custom_registry }).
+%%% '''
+%%%
+%%% The metrics will be stored in `/tmp/collector.prom'.
+%%%
 %%% @end
 %%%===================================================================
 -module(collector).
@@ -13,7 +25,9 @@
 	 prometheus_labels/0,
 	 prometheus_labels/1,
 	 prometheus_init/0,
+	 prometheus_init/1,
 	 prometheus_deregister/0,
+	 prometheus_deregister/1,
 	 prometheus_apply/0,
 	 prometheus_apply/1,
 	 prometheus_gauges/0,
@@ -411,22 +425,28 @@ stop() ->
 %% @hidden
 %%--------------------------------------------------------------------
 prometheus_process_init(Opts) ->
+    Interval = maps:get(interval, Opts, 60_000),
     erlang:register(?MODULE, self()),
     erlang:process_flag(trap_exit, true),
     _ = prometheus_init(Opts),
     _ = prometheus_apply(Opts),
-    {ok, Ref} = timer:send_interval(60_000, tick),
+    {ok, Ref} = timer:send_interval(Interval, tick),
     prometheus_process_loop(Opts, Ref).
 
 %%--------------------------------------------------------------------
 %% @hidden
 %%--------------------------------------------------------------------
 prometheus_process_loop(Opts, Ref) ->
+    Interval = maps:get(interval, Opts, 60_000),
+    IntervalDelay = Interval*3,
     receive
 	tick ->
 	    prometheus_process_action(Opts),
 	    prometheus_process_loop(Opts, Ref);
 	_ ->
+	    timer:cancel(Ref)
+    after
+	IntervalDelay ->
 	    timer:cancel(Ref)
     end.
 
