@@ -1,5 +1,5 @@
 %%%===================================================================
-%%% @doc
+%%% @doc A quick and dirty extended collector metrics interface.
 %%% @end
 %%%===================================================================
 -module(collector).
@@ -15,38 +15,48 @@
 	 prometheus_init/0,
 	 prometheus_reset/0,
 	 prometheus_apply/0,
+	 prometheus_apply/1,
 	 prometheus_gauges/0,
+	 prometheus_gauges/1,
 	 start_link/0,
+	 start_link/1,
 	 stop/0
 ]).
 -compile({no_auto_import,[process_info/2]}).
 
 %%--------------------------------------------------------------------
-%%
+%% @doc returns the list of processes with their registered name.
+%% @end
 %%--------------------------------------------------------------------
 registered_processes() ->
     [ {X, erlang:whereis(X)} || X <-  erlang:registered() ].
 
 %%--------------------------------------------------------------------
-%%
+%% @doc convert a pid term to binary.
+%% @end
 %%--------------------------------------------------------------------
 pid_to_binary(Pid) ->
     list_to_binary(pid_to_list(Pid)).
 
 %%--------------------------------------------------------------------
-%%
+%% @doc list processes info.
+%% @see processes_info/1
+%% @end
 %%--------------------------------------------------------------------
 processes_info() ->
     processes_info(#{}).
 
 %%--------------------------------------------------------------------
-%%
+%% @doc list processes info.
+%% @see processes_info/2
+%% @end
 %%--------------------------------------------------------------------
 processes_info(Opts) ->
     processes_info(erlang:processes(), Opts).
 
 %%--------------------------------------------------------------------
-%%
+%% @doc list extended processes info.
+%% @end
 %%--------------------------------------------------------------------
 processes_info(Pids, Opts) ->
     lists:foldr(
@@ -55,13 +65,16 @@ processes_info(Pids, Opts) ->
       Pids).
 
 %%--------------------------------------------------------------------
-%%
+%% @doc display extended process info for a running process.
+%% @see process_info/2
+%% @end
 %%--------------------------------------------------------------------
 process_info(Pid) ->
     process_info(Pid, #{}).
 
 %%--------------------------------------------------------------------
-%%
+%% @doc display extended process info for a running process.
+%% @end
 %%--------------------------------------------------------------------
 process_info(Pid, Opts)
   when is_pid(Pid), is_map(Opts) ->
@@ -78,7 +91,7 @@ process_info(RegisteredName, Opts)
     process_info(Pid, Opts).
     
 %%--------------------------------------------------------------------
-%%
+%% @hidden
 %%--------------------------------------------------------------------
 process_info(Pid, [], Buffer, Opts) ->
     process_info_registered(Pid, Buffer, Opts);
@@ -123,7 +136,7 @@ process_info(Pid, [_|Rest], Buffer, Opts) ->
     process_info(Pid, Rest, Buffer, Opts).
 
 %%--------------------------------------------------------------------
-%%
+%% @hidden
 %%--------------------------------------------------------------------
 process_info_garbage_collection([], Buffer, _Opts) -> Buffer;
 process_info_garbage_collection([X = {min_bin_vheap_size,_}|Rest], Buffer, Opts) ->
@@ -138,6 +151,9 @@ process_info_garbage_collection([_|Rest], Buffer, Opts) ->
     process_info_garbage_collection(Rest, Buffer, Opts).
 
 %%--------------------------------------------------------------------
+%% @hidden
+%%
+%% add the registered name if it exists.
 %%
 %%--------------------------------------------------------------------
 process_info_registered(Pid, Buffer, Opts = #{ without_registered_name := true }) ->
@@ -153,6 +169,10 @@ process_info_registered(Pid, Buffer, Opts) ->
     end.
 
 %%--------------------------------------------------------------------
+%% @hidden
+%% 
+%% not all information are present at the same place, this function
+%% appends them from other places.
 %%
 %%--------------------------------------------------------------------
 process_info_extra(Pid, Buffer, Opts = #{ without_extra := true }) ->
@@ -183,7 +203,8 @@ process_info_extra(Pid, Buffer, Opts) ->
     process_info_final(Pid, NewBuffer, Opts).
 
 %%--------------------------------------------------------------------
-%%
+%% @hidden
+%% wrapper around erlang:process_info/2
 %%--------------------------------------------------------------------
 try_process_info(Pid, Term) ->
     try
@@ -196,7 +217,7 @@ try_process_info(Pid, Term) ->
     end.	     
 
 %%--------------------------------------------------------------------
-%%
+%% @hidden
 %%--------------------------------------------------------------------
 process_info_final(_Pid, Buffer, #{ as_map := true }) ->
     maps:from_list(Buffer);
@@ -204,7 +225,8 @@ process_info_final(_Pid, Buffer, _Opts) ->
     Buffer.
 
 %%--------------------------------------------------------------------
-%%
+%% @doc default prometheus labels used by the collector.
+%% @end
 %%--------------------------------------------------------------------
 prometheus_labels() ->
     [ pid
@@ -215,8 +237,10 @@ prometheus_labels() ->
     ].
 
 %%--------------------------------------------------------------------
-%%
-%%--------------------------------------------------------------------
+%% @doc retrieve the correct labels at the right place from extended
+%% info.
+%% @end
+%% --------------------------------------------------------------------
 prometheus_labels(Info) when is_list(Info) ->
     prometheus_labels(maps:from_list(Info));
 prometheus_labels(#{ status := undefined }) ->
@@ -225,18 +249,38 @@ prometheus_labels(Info) ->
     [ maps:get(X, Info) || X <- prometheus_labels() ].
 
 %%--------------------------------------------------------------------
-%%
+%% @doc
+%% @see prometheus_apply/1
+%% @end
 %%--------------------------------------------------------------------
 prometheus_apply() ->
-    Gauges = prometheus_gauges(),
+    prometheus_apply(#{}).
+
+%%--------------------------------------------------------------------
+%% @doc apply prometheus functions.
+%% @end
+%%--------------------------------------------------------------------
+prometheus_apply(Opts) ->
+    Gauges = prometheus_gauges(Opts),
     _ = prometheus_reset(),
     [ erlang:apply(M, F, A) || {M, F, A} <- Gauges ].
 
 %%--------------------------------------------------------------------
-%%
+%% @doc
+%% @see prometheus_gauges/1
+%% @end
 %%--------------------------------------------------------------------
 prometheus_gauges() ->
-    Infos = processes_info(#{ as_map => true }),
+    prometheus_gauges(#{}).
+
+%%--------------------------------------------------------------------
+%% @doc returns MFA tuples to update prometheus gauges.
+%% @end
+%%--------------------------------------------------------------------
+prometheus_gauges(Opts) ->
+    Filter = maps:get(filter, Opts, fun(_) -> true end),
+    InfosRaw = processes_info(#{ as_map => true }),
+    Infos = lists:filter(Filter, InfosRaw),
     lists:flatten(
       [ prometheus_gauges(N, Infos, K) || 
 	  {N, K} <- [ {erlang_custom_process_memory, memory}
@@ -250,7 +294,7 @@ prometheus_gauges() ->
       ]).
     
 %%--------------------------------------------------------------------
-%%
+%% @hidden
 %%--------------------------------------------------------------------
 prometheus_gauges(Name, Infos, ValueKey) ->
     prometheus_gauges(Name, Infos, ValueKey, []).
@@ -263,7 +307,7 @@ prometheus_gauges(Name, [Info|Rest], ValueKey, Buffer) ->
     prometheus_gauges(Name, Rest, ValueKey, NewBuffer).
 
 %%--------------------------------------------------------------------
-%%
+%% @hidden
 %%--------------------------------------------------------------------
 prometheus_gauge(_Name, #{ status := undefined }, _ValueKey) ->
     {error, undefined};
@@ -273,7 +317,8 @@ prometheus_gauge(Name, Info, ValueKey) ->
     {prometheus_gauge, set, [Name, Labels, Value]}.
 
 %%--------------------------------------------------------------------
-%%
+%% @doc init prometheus application with custom metrics name.
+%% @end
 %%--------------------------------------------------------------------
 prometheus_init() ->
     Gauges =
@@ -311,7 +356,8 @@ prometheus_init() ->
     ].
 
 %%--------------------------------------------------------------------
-%%
+%% @doc reset custom prometheus metrics.
+%% @end
 %%--------------------------------------------------------------------
 prometheus_reset() ->
     Labels = prometheus_labels(),
@@ -322,35 +368,45 @@ prometheus_reset() ->
     prometheus_gauge:reset(erlang_custom_process_heap_size, Labels).
 
 %%--------------------------------------------------------------------
-%%
-%%--------------------------------------------------------------------
+%% @doc start a small linked processes to update prometheus gauges.
+%% @see start_link/1
+%% @end
+%% --------------------------------------------------------------------
 start_link() ->
-    {ok, spawn_link(fun prometheus_process_init/0)}.
+    start_link(#{}).
 
 %%--------------------------------------------------------------------
-%%
+%% @doc start a small linked processes to update prometheus gauges.
+%% @end
+%%--------------------------------------------------------------------
+start_link(Opts) ->
+    {ok, spawn_link(fun() -> prometheus_process_init(Opts) end)}.
+
+%%--------------------------------------------------------------------
+%% @doc stop collector process.
+%% @end
 %%--------------------------------------------------------------------
 stop() ->
     ?MODULE ! stop.
 
 %%--------------------------------------------------------------------
-%%
+%% @hidden
 %%--------------------------------------------------------------------
-prometheus_process_init() ->
+prometheus_process_init(Opts) ->
     erlang:register(?MODULE, self()),
     erlang:process_flag(trap_exit, true),
-    _ = prometheus_apply(),
+    _ = prometheus_apply(Opts),
     {ok, Ref} = timer:send_interval(60_000, tick),
-    prometheus_process_loop(Ref).
+    prometheus_process_loop(Opts, Ref).
 
 %%--------------------------------------------------------------------
-%%
+%% @hidden
 %%--------------------------------------------------------------------
-prometheus_process_loop(Ref) ->
+prometheus_process_loop(Opts, Ref) ->
     receive
 	tick ->
-	    _ = prometheus_apply(),
-	    prometheus_process_loop(Ref);
+	    _ = prometheus_apply(Opts),
+	    prometheus_process_loop(Opts, Ref);
 	_ ->
 	    timer:cancel(Ref)
     end.
