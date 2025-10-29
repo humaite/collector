@@ -501,7 +501,7 @@ prometheus_init(Opts) ->
 	  ,{help, "extra process monitors metrics"}
 	  ]
 	],
-    [ erlang:apply(prometheus_process_gauge, new, [A]) ||
+    [ erlang:apply(prometheus_gauge, new, [A]) ||
 	A <- Gauges
     ].
 
