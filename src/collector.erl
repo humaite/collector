@@ -13,9 +13,11 @@
 	 prometheus_labels/0,
 	 prometheus_labels/1,
 	 prometheus_init/0,
+	 prometheus_reset/0,
 	 prometheus_apply/0,
 	 prometheus_gauges/0,
-	 start_link/0
+	 start_link/0,
+	 stop/0
 ]).
 -compile({no_auto_import,[process_info/2]}).
 
@@ -207,11 +209,6 @@ process_info_final(_Pid, Buffer, _Opts) ->
 prometheus_labels() ->
     [ pid
     , registered_name
-    , async_dist
-    , catchlevel
-    , initial_module
-    , initial_function
-    , initial_arity
     , status
     , parent
     , group_leader
@@ -232,6 +229,7 @@ prometheus_labels(Info) ->
 %%--------------------------------------------------------------------
 prometheus_apply() ->
     Gauges = prometheus_gauges(),
+    _ = prometheus_reset(),
     [ erlang:apply(M, F, A) || {M, F, A} <- Gauges ].
 
 %%--------------------------------------------------------------------
@@ -315,16 +313,34 @@ prometheus_init() ->
 %%--------------------------------------------------------------------
 %%
 %%--------------------------------------------------------------------
+prometheus_reset() ->
+    Labels = prometheus_labels(),
+    prometheus_gauge:reset(erlang_custom_process_memory, Labels),
+    prometheus_gauge:reset(erlang_custom_process_stack_size, Labels),
+    prometheus_gauge:reset(erlang_custom_process_message_queue, Labels),
+    prometheus_gauge:reset(erlang_custom_process_reductions, Labels),
+    prometheus_gauge:reset(erlang_custom_process_heap_size, Labels).
+
+%%--------------------------------------------------------------------
+%%
+%%--------------------------------------------------------------------
 start_link() ->
     {ok, spawn_link(fun prometheus_process_init/0)}.
 
 %%--------------------------------------------------------------------
 %%
 %%--------------------------------------------------------------------
+stop() ->
+    ?MODULE ! stop.
+
+%%--------------------------------------------------------------------
+%%
+%%--------------------------------------------------------------------
 prometheus_process_init() ->
+    erlang:register(?MODULE, self()),
     erlang:process_flag(trap_exit, true),
     _ = prometheus_apply(),
-    {ok, Ref} = timer:send_interval(30_000, tick),
+    {ok, Ref} = timer:send_interval(60_000, tick),
     prometheus_process_loop(Ref).
 
 %%--------------------------------------------------------------------
