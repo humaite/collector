@@ -22,19 +22,24 @@
 	 processes_info/0,
 	 processes_info/1,
 	 processes_info/2,
-	 prometheus_labels/0,
-	 prometheus_labels/1,
+	 prometheus_process_labels/0,
+	 prometheus_process_labels/1,
 	 prometheus_init/0,
 	 prometheus_init/1,
 	 prometheus_deregister/0,
 	 prometheus_deregister/1,
 	 prometheus_apply/0,
 	 prometheus_apply/1,
-	 prometheus_gauges/0,
-	 prometheus_gauges/1,
+	 prometheus_process_gauges/0,
+	 prometheus_process_gauges/1,
 	 start_link/0,
 	 start_link/1,
-	 stop/0
+	 stop/0,
+	 ports_info/0,
+	 ports_info/1,
+	 ports_info/2,
+	 port_info/1,
+	 port_info/2
 ]).
 -compile({no_auto_import,[process_info/2]}).
 
@@ -51,6 +56,108 @@ registered_processes() ->
 %%--------------------------------------------------------------------
 pid_to_binary(Pid) ->
     list_to_binary(pid_to_list(Pid)).
+
+%%--------------------------------------------------------------------
+%%
+%%--------------------------------------------------------------------
+port_to_binary(Port) ->
+    list_to_binary(port_to_list(Port)).
+
+%%--------------------------------------------------------------------
+%%
+%%--------------------------------------------------------------------
+ports_info() ->
+    ports_info(#{}).
+
+%%--------------------------------------------------------------------
+%%
+%%--------------------------------------------------------------------
+ports_info(Opts) ->
+    ports_info(erlang:ports(), Opts).
+
+%%--------------------------------------------------------------------
+%%
+%%--------------------------------------------------------------------
+ports_info(Ports, Opts) ->
+    lists:foldr(
+      fun(P, A) -> [port_info(P,Opts)|A] end,
+      [],
+      Ports).
+
+%%--------------------------------------------------------------------
+%%
+%%--------------------------------------------------------------------
+port_info(Port) ->
+    port_info(Port, #{}).
+
+%%--------------------------------------------------------------------
+%%
+%%--------------------------------------------------------------------
+port_info(Port, Opts)
+  when is_port(Port), is_map(Opts) ->
+    case erlang:port_info(Port) of
+	Info when is_list(Info) ->
+ 	    port_info(Port, Info, [{port, port_to_binary(Port)}], Opts);
+	undefined ->
+	    Buffer = [{port, port_to_binary(Port)}, {status, undefined}],
+	    port_info_final(Port, Buffer, Opts)
+    end.
+
+%%--------------------------------------------------------------------
+%%
+%%--------------------------------------------------------------------
+port_info(Port, [], Buffer, Opts) ->
+    port_info_extra(Port, Buffer, Opts);
+port_info(Port, [{name, Name}|Rest], Buffer, Opts) ->
+    NewBuffer = [{name, list_to_binary(Name)}|Buffer],
+    port_info(Port,Rest, NewBuffer, Opts);
+port_info(Port, [{links, Links}|Rest], Buffer, Opts) ->
+    NewBuffer = [{links, length(Links)}|Buffer],
+    port_info(Port, Rest, NewBuffer, Opts);
+port_info(Port, [Id = {id, _}|Rest], Buffer, Opts) ->
+    port_info(Port, Rest, [Id|Buffer], Opts);
+port_info(Port, [I = {input,_}|Rest], Buffer, Opts) ->
+    port_info(Port, Rest, [I|Buffer], Opts);
+port_info(Port, [O = {output, _}|Rest], Buffer, Opts) ->
+    port_info(Port, Rest, [O|Buffer], Opts);
+port_info(Port, [P = {os_pid, _}|Rest], Buffer, Opts) ->
+    port_info(Port, Rest, [P|Buffer], Opts);
+port_info(Port, [_|Rest], Buffer, Opts) ->
+    port_info(Port, Rest, Buffer, Opts).
+
+%%--------------------------------------------------------------------
+%%
+%%--------------------------------------------------------------------
+port_info_extra(Port, Buffer, Opts) ->
+    NewBuffer = [ {memory, try_port_info(Port, memory)}
+		, {locking, try_port_info(Port, locking)}
+		, {parallelism, try_port_info(Port, parallelism)}
+		, {queue_size, try_port_info(Port, queue_size)}
+		, {registered_name, try_port_info(Port, registered_name)}
+		| Buffer
+		],
+    port_info_final(Port, NewBuffer, Opts).
+
+%%--------------------------------------------------------------------
+%%
+%%--------------------------------------------------------------------
+port_info_final(_Port, Buffer, _Opts = #{ as_map := true }) ->
+    maps:from(Buffer);
+port_info_final(_Port, Buffer, _Opts) ->
+    Buffer.
+
+%%--------------------------------------------------------------------
+%%
+%%--------------------------------------------------------------------
+try_port_info(Port, Term) ->
+    try
+	erlang:port_info(Port, Term)
+    of
+	{Term, Value} -> Value;
+	_ -> undefined
+    catch
+	_ -> undefined
+    end.
 
 %%--------------------------------------------------------------------
 %% @doc list processes info.
@@ -242,7 +349,7 @@ process_info_final(_Pid, Buffer, _Opts) ->
 %% @doc default prometheus labels used by the collector.
 %% @end
 %%--------------------------------------------------------------------
-prometheus_labels() ->
+prometheus_process_labels() ->
     [ pid
     , registered_name
     , status
@@ -255,12 +362,32 @@ prometheus_labels() ->
 %% info.
 %% @end
 %% --------------------------------------------------------------------
-prometheus_labels(Info) when is_list(Info) ->
-    prometheus_labels(maps:from_list(Info));
-prometheus_labels(#{ status := undefined }) ->
+prometheus_process_labels(Info) when is_list(Info) ->
+    prometheus_process_labels(maps:from_list(Info));
+prometheus_process_labels(#{ status := undefined }) ->
     [];
-prometheus_labels(Info) ->
-    [ maps:get(X, Info) || X <- prometheus_labels() ].
+prometheus_process_labels(Info) ->
+    [ maps:get(X, Info) || X <- prometheus_process_labels() ].
+
+%%--------------------------------------------------------------------
+%%
+%%--------------------------------------------------------------------
+prometheus_port_labels() ->
+    [ port
+    , name
+    , id
+    , connected
+    ].
+
+%%--------------------------------------------------------------------
+%%
+%%--------------------------------------------------------------------
+prometheus_port_labels(Info) when is_list(Info) ->
+    prometheus_port_labels(maps:from_list(Info));
+prometheus_port_labels(#{ status := undefined }) ->
+    [];
+prometheus_port_labels(Info) ->
+    [ maps:get(X, Info) || X <- prometheus_port_labels() ].
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -275,7 +402,7 @@ prometheus_apply() ->
 %% @end
 %%--------------------------------------------------------------------
 prometheus_apply(Opts) ->
-    Gauges = prometheus_gauges(Opts),
+    Gauges = prometheus_process_gauges(Opts),
     [ erlang:apply(M, F, A) || {M, F, A} <- Gauges ].
 
 %%--------------------------------------------------------------------
@@ -283,50 +410,50 @@ prometheus_apply(Opts) ->
 %% @see prometheus_gauges/1
 %% @end
 %%--------------------------------------------------------------------
-prometheus_gauges() ->
-    prometheus_gauges(#{}).
+prometheus_process_gauges() ->
+    prometheus_process_gauges(#{}).
 
 %%--------------------------------------------------------------------
 %% @doc returns MFA tuples to update prometheus gauges.
 %% @end
 %%--------------------------------------------------------------------
-prometheus_gauges(Opts) ->
+prometheus_process_gauges(Opts) ->
     Filter = maps:get(filter, Opts, fun(_) -> true end),
     InfosRaw = processes_info(#{ as_map => true }),
     Infos = lists:filter(Filter, InfosRaw),
     lists:flatten(
-      [ prometheus_gauges(N, Infos, K, Opts) || 
+      [ prometheus_process_gauges(N, Infos, K, Opts) || 
 	  {N, K} <- [ {erlang_custom_process_memory, memory}
 		    , {erlang_custom_process_stack_size, stack_size}
 		    , {erlang_custom_process_message_queue, message_queue_len}
 		    , {erlang_custom_process_reductions, reductions}
 		    , {erlang_custom_process_heap_size, heap_size}
-		    % , {erlang_custom_process_links, links}
-		    % , {erlang_custom_monitors, monitors}
+		    , {erlang_custom_process_links, links}
+		    , {erlang_custom_process_monitors, monitors}
 		    ]
       ]).
     
 %%--------------------------------------------------------------------
 %% @hidden
 %%--------------------------------------------------------------------
-prometheus_gauges(Name, Infos, ValueKey, Opts) ->
-    prometheus_gauges(Name, Infos, ValueKey, [], Opts).
-prometheus_gauges(_Name, [], _ValueKey, Buffer, _Opts) ->
+prometheus_process_gauges(Name, Infos, ValueKey, Opts) ->
+    prometheus_process_gauges(Name, Infos, ValueKey, [], Opts).
+prometheus_process_gauges(_Name, [], _ValueKey, Buffer, _Opts) ->
     Buffer;
-prometheus_gauges(Name, [Info|Rest], ValueKey, Buffer, Opts) ->
-    NewBuffer = [ prometheus_gauge(Name, Info, ValueKey, Opts)
+prometheus_process_gauges(Name, [Info|Rest], ValueKey, Buffer, Opts) ->
+    NewBuffer = [ prometheus_process_gauge(Name, Info, ValueKey, Opts)
 		| Buffer
 		],
-    prometheus_gauges(Name, Rest, ValueKey, NewBuffer, Opts).
+    prometheus_process_gauges(Name, Rest, ValueKey, NewBuffer, Opts).
 
 %%--------------------------------------------------------------------
 %% @hidden
 %%--------------------------------------------------------------------
-prometheus_gauge(_Name, #{ status := undefined }, _ValueKey, _Opts) ->
+prometheus_process_gauge(_Name, #{ status := undefined }, _ValueKey, _Opts) ->
     {error, undefined};
-prometheus_gauge(Name, Info, ValueKey, Opts) ->
+prometheus_process_gauge(Name, Info, ValueKey, Opts) ->
     Registry = maps:get(registry, Opts, default),
-    Labels = prometheus_labels(Info),
+    Labels = prometheus_process_labels(Info),
     Value = maps:get(ValueKey, Info),
     {prometheus_gauge, set, [Registry, Name, Labels, Value]}.
 
@@ -341,40 +468,40 @@ prometheus_init(Opts) ->
     Registry = maps:get(registry, Opts, default),
     Gauges =
 	[ [{name, erlang_custom_process_memory}
-	  ,{labels, prometheus_labels()}
+	  ,{labels, prometheus_process_labels()}
 	  ,{help, "extra process memory metrics"}
 	  ,{registry, Registry}
 	  ]
 	, [{name, erlang_custom_process_stack_size}
-	  ,{labels, prometheus_labels()}
+	  ,{labels, prometheus_process_labels()}
 	  ,{help, "extra process stack size metrics"}
 	  ,{registry, Registry}
 	  ]
 	, [{name, erlang_custom_process_message_queue}
-	  ,{labels, prometheus_labels()}
+	  ,{labels, prometheus_process_labels()}
 	  ,{help, "extra process message queue metrics"}
 	  ,{registry, Registry}
 	  ]
-	, [{name , erlang_custom_process_reductions}
-	  ,{labels , prometheus_labels()}
-	  ,{help , "extra process reductions metrics"}
+	, [{name, erlang_custom_process_reductions}
+	  ,{labels, prometheus_process_labels()}
+	  ,{help, "extra process reductions metrics"}
 	  ,{registry, Registry}
 	  ]
-	, [{name , erlang_custom_process_heap_size}
-	  ,{labels , prometheus_labels()}
-	  ,{help , "extra process heap size metrics"}
+	, [{name, erlang_custom_process_heap_size}
+	  ,{labels, prometheus_process_labels()}
+	  ,{help, "extra process heap size metrics"}
 	  ,{registry, Registry}
 	  ]
-	% , [{ name , erlang_custom_process_links}
-	%   ,{labels , prometheus_labels()}
-	%   ,{help , "extra process links metrics"}
-	%   ]
-	% , [{ name , erlang_custom_monitors}
-	%   ,{labels , prometheus_labels()}
-	%   ,{help , "extra process monitors metrics"}
-	%  ]
+	, [{name, erlang_custom_process_links}
+	  ,{labels, prometheus_process_labels()}
+	  ,{help, "extra process links metrics"}
+	  ]
+	, [{name, erlang_custom_process_monitors}
+	  ,{labels, prometheus_process_labels()}
+	  ,{help, "extra process monitors metrics"}
+	  ]
 	],
-    [ erlang:apply(prometheus_gauge, new, [A]) ||
+    [ erlang:apply(prometheus_process_gauge, new, [A]) ||
 	A <- Gauges
     ].
 
@@ -396,6 +523,8 @@ prometheus_deregister(Opts) ->
 	       , erlang_custom_process_message_queue
 	       , erlang_custom_process_reductions
 	       , erlang_custom_process_heap_size
+	       , erlang_custom_process_links
+	       , erlang_custom_process_monitors
 	       ]
     ].
     
@@ -431,18 +560,18 @@ prometheus_process_init(Opts) ->
     _ = prometheus_init(Opts),
     _ = prometheus_apply(Opts),
     {ok, Ref} = timer:send_interval(Interval, tick),
-    prometheus_process_loop(Opts, Ref).
+    prometheus_process_loop(0, Opts, Ref).
 
 %%--------------------------------------------------------------------
 %% @hidden
 %%--------------------------------------------------------------------
-prometheus_process_loop(Opts, Ref) ->
+prometheus_process_loop(Counter, Opts, Ref) ->
     Interval = maps:get(interval, Opts, 60_000),
     IntervalDelay = Interval*3,
     receive
 	tick ->
-	    prometheus_process_action(Opts),
-	    prometheus_process_loop(Opts, Ref);
+	    prometheus_process_action(Counter, Opts),
+	    prometheus_process_loop((Counter+1 rem 3), Opts, Ref);
 	_ ->
 	    timer:cancel(Ref)
     after
@@ -450,14 +579,15 @@ prometheus_process_loop(Opts, Ref) ->
 	    timer:cancel(Ref)
     end.
 
-prometheus_process_action(Opts = #{ registry := Registry })
+prometheus_process_action(Counter, Opts = #{ registry := Registry })
   when Registry =/= default ->
     _ = prometheus_deregister(Opts),
     _ = prometheus_init(Opts),
     _ = prometheus_apply(Opts),
     Prom = prometheus_text_format:format(Registry),
-    file:write_file("/tmp/collector.prom", Prom);
-prometheus_process_action(Opts) ->
+    PromFile = ["/tmp/collector.prom.", integer_to_list(Counter)],
+    file:write_file(PromFile, Prom);
+prometheus_process_action(_Counter, Opts) ->
     _ = prometheus_deregister(Opts),
     _ = prometheus_init(Opts),
     _ = prometheus_apply(Opts).
