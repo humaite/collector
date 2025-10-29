@@ -13,7 +13,7 @@
 	 prometheus_labels/0,
 	 prometheus_labels/1,
 	 prometheus_init/0,
-	 prometheus_reset/0,
+	 prometheus_deregister/0,
 	 prometheus_apply/0,
 	 prometheus_apply/1,
 	 prometheus_gauges/0,
@@ -262,7 +262,6 @@ prometheus_apply() ->
 %%--------------------------------------------------------------------
 prometheus_apply(Opts) ->
     Gauges = prometheus_gauges(Opts),
-    _ = prometheus_reset(),
     [ erlang:apply(M, F, A) || {M, F, A} <- Gauges ].
 
 %%--------------------------------------------------------------------
@@ -356,17 +355,19 @@ prometheus_init() ->
     ].
 
 %%--------------------------------------------------------------------
-%% @doc reset custom prometheus metrics.
+%% @doc deregister custom prometheus metrics.
 %% @end
 %%--------------------------------------------------------------------
-prometheus_reset() ->
-    Labels = prometheus_labels(),
-    prometheus_gauge:reset(erlang_custom_process_memory, Labels),
-    prometheus_gauge:reset(erlang_custom_process_stack_size, Labels),
-    prometheus_gauge:reset(erlang_custom_process_message_queue, Labels),
-    prometheus_gauge:reset(erlang_custom_process_reductions, Labels),
-    prometheus_gauge:reset(erlang_custom_process_heap_size, Labels).
-
+prometheus_deregister() ->
+    [ prometheus_gauge:deregister(Name) || 
+	Name <-[ erlang_custom_process_memory
+	       , erlang_custom_process_stack_size
+	       , erlang_custom_process_message_queue
+	       , erlang_custom_process_reductions
+	       , erlang_custom_process_heap_size
+	       ]
+    ].
+    
 %%--------------------------------------------------------------------
 %% @doc start a small linked processes to update prometheus gauges.
 %% @see start_link/1
@@ -395,6 +396,7 @@ stop() ->
 prometheus_process_init(Opts) ->
     erlang:register(?MODULE, self()),
     erlang:process_flag(trap_exit, true),
+    _ = prometheus_init(),
     _ = prometheus_apply(Opts),
     {ok, Ref} = timer:send_interval(60_000, tick),
     prometheus_process_loop(Opts, Ref).
@@ -405,6 +407,8 @@ prometheus_process_init(Opts) ->
 prometheus_process_loop(Opts, Ref) ->
     receive
 	tick ->
+	    _ = prometheus_deregister(),
+	    _ = prometheus_init(),
 	    _ = prometheus_apply(Opts),
 	    prometheus_process_loop(Opts, Ref);
 	_ ->
